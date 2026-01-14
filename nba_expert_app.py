@@ -1,105 +1,111 @@
 import streamlit as st
+import requests
 import pandas as pd
-import numpy as np
-from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2
 from datetime import datetime
 
-st.set_page_config(page_title="NBA 3P Oracle Premium", layout="wide", page_icon="🏀")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="NBA Oracle Pro + Tracker", layout="wide", page_icon="🏀")
 
-# --- FONCTION DE SÉCURITÉ POUR TROUVER LA COLONNE ---
-def find_col(df, target_names):
-    for col in df.columns:
-        if any(target in col for target in target_names):
-            return col
-    return None
+# Initialisation de l'historique dans la session
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
-@st.cache_data(ttl=3600)
-def fetch_nba_stats():
+# Récupération sécurisée
+try:
+    RAPID_KEY = st.secrets["X_RAPIDAPI_KEY"]
+    RAPID_HOST = st.secrets["X_RAPIDAPI_HOST"]
+except:
+    st.error("Erreur : Configurez vos Secrets (X_RAPIDAPI_KEY) sur Streamlit.")
+    st.stop()
+
+NBA_TEAMS = sorted([
+    "Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", 
+    "Chicago Bulls", "Cleveland Cavaliers", "Dallas Mavericks", "Denver Nuggets", 
+    "Detroit Pistons", "Golden State Warriors", "Houston Rockets", "Indiana Pacers", 
+    "Los Angeles Clippers", "Los Angeles Lakers", "Memphis Grizzlies", "Miami Heat", 
+    "Milwaukee Bucks", "Minnesota Timberwolves", "New Orleans Pelicans", "New York Knicks", 
+    "Oklahoma City Thunder", "Orlando Magic", "Philadelphia 76ers", "Phoenix Suns", 
+    "Portland Trail Blazers", "Sacramento Kings", "San Antonio Spurs", "Toronto Raptors", 
+    "Utah Jazz", "Washington Wizards"
+])
+
+@st.cache_data(ttl=86400)
+def get_team_stats(team_display_name):
+    api_slug = team_display_name.replace(" ", "-").lower()
+    url = f"https://{RAPID_HOST}/teams/{api_slug}/stats"
+    headers = {"x-rapidapi-key": RAPID_KEY, "x-rapidapi-host": RAPID_HOST}
     try:
-        raw_off = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
-        raw_def = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame', measure_type_detailed_defense='Opponent').get_data_frames()[0]
-        raw_adv = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced').get_data_frames()[0]
-
-        col_fg3m_off = find_col(raw_off, ['FG3M'])
-        col_fg3m_def = find_col(raw_def, ['FG3M'])
-        col_pace = find_col(raw_adv, ['PACE'])
-        col_team_id = find_col(raw_off, ['TEAM_ID'])
-        col_team_name = find_col(raw_off, ['TEAM_NAME'])
-
-        off_df = raw_off[[col_team_id, col_team_name, col_fg3m_off]].rename(columns={col_fg3m_off: 'FG3M', col_team_id: 'TEAM_ID', col_team_name: 'TEAM_NAME'})
-        def_df = raw_def[[col_team_id, col_fg3m_def]].rename(columns={col_fg3m_def: 'OPP_FG3M', col_team_id: 'TEAM_ID'})
-        adv_df = raw_adv[[col_team_id, col_pace]].rename(columns={col_pace: 'PACE', col_team_id: 'TEAM_ID'})
-
-        return off_df.merge(def_df, on='TEAM_ID').merge(adv_df, on='TEAM_ID')
-    except Exception as e:
-        st.error(f"Erreur d'acquisition : {e}")
-        return pd.DataFrame()
-
-df_stats = fetch_nba_stats()
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        return {
+            "fg3m": float(data.get('fg3_per_game', 12.0)),
+            "opp_fg3m": float(data.get('opp_fg3_per_game', 12.0)),
+            "pace": float(data.get('pace', 99.0))
+        }
+    except:
+        return None
 
 # --- INTERFACE ---
-st.title("🏀 NBA 3-Point Oracle Premium")
-st.markdown(f"**Expert Analysis - {datetime.now().strftime('%d/%m/%Y')}**")
+st.title("🏀 NBA Oracle : Analyse & Suivi ROI")
 
-if df_stats.empty:
-    st.warning("🔄 Tentative de connexion aux serveurs NBA...")
-else:
-    league_avg_pace = df_stats['PACE'].mean()
-    
-    # Récupération des matchs réels
-    try:
-        sb = scoreboardv2.ScoreboardV2().get_data_frames()[1]
-    except:
-        sb = pd.DataFrame()
+tab1, tab2 = st.tabs(["🎯 Analyse du Match", "📈 Historique & Performance"])
 
-    # --- LOGIQUE D'AFFICHAGE ---
-    match_list = []
-    if not sb.empty:
-        for idx, row in sb.iterrows():
-            h_id, a_id = row.get('HOME_TEAM_ID'), row.get('VISITOR_TEAM_ID')
-            if h_id in df_stats['TEAM_ID'].values and a_id in df_stats['TEAM_ID'].values:
-                match_list.append((h_id, a_id, "LIVE"))
+with tab1:
+    c1, cvs, c2 = st.columns([2, 0.5, 2])
+    with c1: away_t = st.selectbox("Équipe Extérieure", NBA_TEAMS, index=9)
+    with cvs: st.markdown("<h3 style='text-align:center;'>@</h3>", unsafe_allow_html=True)
+    with c2: home_t = st.selectbox("Équipe Domicile", NBA_TEAMS, index=1)
 
-    # Si aucun match réel, on propose le mode simulation
-    if not match_list:
-        st.info("ℹ️ Aucun match réel n'est encore listé par la NBA pour aujourd'hui. Mode Simulation activé.")
-        # Simulation : Warriors (1610612744) vs Celtics (1610612738)
-        match_list.append((1610612744, 1610612738, "SIMULATION"))
+    with st.sidebar:
+        st.header("⚙️ Paramètres")
+        b2b_h = st.toggle("Home en B2B")
+        b2b_a = st.toggle("Away en B2B")
+        abs_imp = st.slider("Impact Absences", 0.0, 5.0, 0.0)
+        st.divider()
+        bet_amount = st.number_input("Mise (€)", value=10.0)
+        odds = st.number_input("Cote (ex: 1.85)", value=1.85)
 
-    for h_id, a_id, m_type in match_list:
-        h_team = df_stats[df_stats['TEAM_ID'] == h_id].iloc[0]
-        a_team = df_stats[df_stats['TEAM_ID'] == a_id].iloc[0]
+    if st.button("Calculer & Préparer le Pari"):
+        h_s = get_team_stats(home_t)
+        a_s = get_team_stats(away_t)
+        
+        if h_s and a_s:
+            # Algorithme
+            m_pace = (h_s['pace'] + a_s['pace']) / 2
+            p_fact = m_pace / 99.2
+            res_h = ((h_s['fg3m'] + a_s['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_h else 1.0)
+            res_a = ((a_s['fg3m'] + h_s['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_a else 1.0)
+            total = (res_h + res_a) - abs_imp
 
-        type_label = "🔴 SIMULATION" if m_type == "SIMULATION" else "🟢 MATCH RÉEL"
-        with st.expander(f"{type_label} : {a_team['TEAM_NAME']} @ {h_team['TEAM_NAME']}"):
-            c1, c2, c3 = st.columns([2, 1, 2])
+            st.metric("TOTAL PROJETÉ", f"{total:.2f} Paniers à 3pts")
             
-            with c1:
-                st.write(f"**{h_team['TEAM_NAME']}**")
-                h_b2b = st.checkbox("Back-to-Back", key=f"h_b2b_{h_id}")
-                h_abs = st.slider("Absences (Impact)", 0.0, 6.0, 0.0, key=f"h_abs_{h_id}")
-            with c3:
-                st.write(f"**{a_team['TEAM_NAME']}**")
-                a_b2b = st.checkbox("Back-to-Back", key=f"a_b2b_{a_id}")
-                a_abs = st.slider("Absences (Impact)", 0.0, 6.0, 0.0, key=f"a_abs_{a_id}")
+            # Enregistrement temporaire pour le tracker
+            st.session_state.current_bet = {
+                "Date": datetime.now().strftime("%d/%m/%Y"),
+                "Match": f"{away_t} @ {home_t}",
+                "Projection": round(total, 2),
+                "Mise": bet_amount,
+                "Cote": odds
+            }
+            st.success("Analyse prête. Si vous pariez, cliquez sur 'Enregistrer ce pari' ci-dessous.")
 
-            # --- ALGORITHME ---
-            m_pace = (h_team['PACE'] + a_team['PACE']) / 2
-            p_factor = m_pace / league_avg_pace
-            proj_h = ((h_team['FG3M'] + a_team['OPP_FG3M']) / 2) * p_factor * (0.94 if h_b2b else 1.0) - h_abs
-            proj_a = ((a_team['FG3M'] + h_team['OPP_FG3M']) / 2) * p_factor * (0.94 if a_b2b else 1.0) - a_abs
-            total = proj_h + proj_a
+    if 'current_bet' in st.session_state:
+        if st.button("💾 Enregistrer ce pari dans l'historique"):
+            st.session_state.history.append(st.session_state.current_bet)
+            st.toast("Pari ajouté à l'historique !")
 
-            st.divider()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Proj. Domicile", f"{proj_h:.2f}")
-            m2.metric("Proj. Extérieur", f"{proj_a:.2f}")
-            m3.metric("TOTAL MATCH", f"{total:.2f}")
-
-            line = st.number_input("Ligne Bookmaker", value=float(round(total, 1)), step=0.5, key=f"line_{h_id}")
-            edge = total - line
-            
-            if abs(edge) >= 2.0:
-                st.success(f"🔥 **SIGNAL FORT : {'OVER' if edge > 0 else 'UNDER'}** (Edge: {edge:.2f})")
-            else:
-                st.info("⚖️ Match équilibré.")
+with tab2:
+    st.header("Suivi de vos investissements")
+    if st.session_state.history:
+        df = pd.DataFrame(st.session_state.history)
+        st.table(df)
+        
+        # Calculs rapides
+        total_miste = sum(d['Mise'] for d in st.session_state.history)
+        st.write(f"**Total Engagé :** {total_miste:.2f}€")
+        
+        # Export CSV
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Télécharger l'historique (CSV)", data=csv, file_name="nba_oracle_bets.csv", mime="text/csv")
+    else:
+        st.info("Aucun pari enregistré pour le moment.")
