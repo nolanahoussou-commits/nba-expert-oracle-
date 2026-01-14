@@ -3,105 +3,117 @@ import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2
 from datetime import datetime
 
-# --- CONFIGURATION PRO ---
-st.set_page_config(page_title="NBA 3P Expert Oracle", layout="wide", page_icon="🏀")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="NBA 3P Oracle Pro", layout="wide", page_icon="🏀")
 
-# --- CHARGEMENT DES DONNÉES STATISTIQUES ---
+# --- CHARGEMENT ET FUSION DES DONNÉES (VERSION SÉCURISÉE) ---
 @st.cache_data(ttl=3600)
-def load_nba_data():
+def load_expert_data():
     try:
-        # Stats de base (FG3M, OPP_FG3M)
-        base = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
-        # Stats avancées (PACE)
-        adv = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced').get_data_frames()[0]
-        combined = pd.merge(base, adv[['TEAM_ID', 'PACE']], on='TEAM_ID')
-        return combined
+        # 1. Stats Offensives (FG3M : Paniers marqués)
+        off_stats = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
+        off_stats = off_stats[['TEAM_ID', 'TEAM_NAME', 'FG3M', 'FG3A']]
+
+        # 2. Stats Défensives (OPP_FG3M : Paniers encaissés)
+        def_stats = leaguedashteamstats.LeagueDashTeamStats(
+            per_mode_detailed='PerGame', 
+            measure_type_detailed_defense='Opponent'
+        ).get_data_frames()[0]
+        def_stats = def_stats[['TEAM_ID', 'FG3M']].rename(columns={'FG3M': 'OPP_FG3M'})
+
+        # 3. Stats Avancées (PACE : Rythme)
+        adv_stats = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced').get_data_frames()[0]
+        adv_stats = adv_stats[['TEAM_ID', 'PACE']]
+
+        # FUSION DES TROIS SOURCES
+        df = pd.merge(off_stats, def_stats, on='TEAM_ID')
+        df = pd.merge(df, adv_stats, on='TEAM_ID')
+        
+        return df
     except Exception as e:
-        st.error(f"Erreur lors du chargement des statistiques : {e}")
+        st.error(f"Erreur API NBA : {e}")
         return pd.DataFrame()
 
-data = load_nba_data()
+# Initialisation des données
+data = load_expert_data()
 
-# --- INTERFACE ---
+# --- INTERFACE UTILISATEUR ---
 st.title("🏀 NBA 3-Point Expert Oracle")
-st.markdown(f"### Analyses du {datetime.now().strftime('%d/%m/%Y')}")
+st.markdown(f"**Analyse professionnelle du {datetime.now().strftime('%d/%m/%Y')}**")
 
 if data.empty:
-    st.warning("Impossible de charger les statistiques NBA. Réessayez plus tard.")
+    st.error("Impossible de charger les statistiques. Vérifiez votre connexion ou l'état de l'API NBA.")
 else:
-    avg_pace = data['PACE'].mean()
+    avg_pace_league = data['PACE'].mean()
 
-    # --- RÉCUPÉRATION DES MATCHS (VERSION ROBUSTE) ---
+    # --- RÉCUPÉRATION DES MATCHS ---
     try:
-        # On récupère le Header du Scoreboard qui est plus stable pour les noms d'équipes
+        # On utilise le ScoreboardV2 pour avoir les IDs des équipes du jour
         sb = scoreboardv2.ScoreboardV2().get_data_frames()[1]
-        
-        # Vérification des colonnes pour éviter le KeyError
-        if 'HOME_TEAM_ID' not in sb.columns:
-            # Si le format est différent, on essaie de mapper via le premier tableau
-            sb = scoreboardv2.ScoreboardV2().get_data_frames()[0]
-            # Mapping des noms de colonnes si nécessaire
-            sb = sb.rename(columns={'HOME_TEAM_ID': 'HOME_TEAM_ID', 'VISITOR_TEAM_ID': 'VISITOR_TEAM_ID'})
-    except Exception as e:
-        st.error("Données des matchs indisponibles pour le moment.")
+    except:
         sb = pd.DataFrame()
 
     if sb.empty:
-        st.info("Aucun match prévu ou en cours pour le moment.")
+        st.info("Aucun match détecté pour aujourd'hui dans l'API.")
     else:
+        # Parcourir chaque match
         for index, game in sb.iterrows():
-            # Utilisation de .get() pour éviter le crash en cas de colonne manquante
             home_id = game.get('HOME_TEAM_ID')
             away_id = game.get('VISITOR_TEAM_ID')
-            
-            if not home_id or not away_id:
-                continue
 
-            # Extraction des lignes de stats
-            home_stats = data[data['TEAM_ID'] == home_id]
-            away_stats = data[data['TEAM_ID'] == away_id]
+            # Vérification de l'existence des équipes dans nos stats
+            if home_id in data['TEAM_ID'].values and away_id in data['TEAM_ID'].values:
+                home_row = data[data['TEAM_ID'] == home_id].iloc[0]
+                away_row = data[data['TEAM_ID'] == away_id].iloc[0]
 
-            if home_stats.empty or away_stats.empty:
-                continue
+                # Titre du match
+                with st.expander(f"🔍 ANALYSE : {away_row['TEAM_NAME']} @ {home_row['TEAM_NAME']}"):
+                    col_h, col_mid, col_a = st.columns([2, 1, 2])
 
-            home_row = home_stats.iloc[0]
-            away_row = away_stats.iloc[0]
+                    with col_h:
+                        st.subheader(home_row['TEAM_NAME'])
+                        b2b_h = st.checkbox("Back-to-Back", key=f"b2b_h_{index}")
+                        abs_h = st.multiselect("Absents", ["Star", "Shooteur", "Passeur"], key=f"abs_h_{index}")
 
-            with st.expander(f"🔍 {away_row['TEAM_NAME']} @ {home_row['TEAM_NAME']}"):
-                col_m1, col_m2, col_m3 = st.columns([2, 1, 2])
-                
-                with col_m1:
-                    st.subheader(home_row['TEAM_NAME'])
-                    b2b_h = st.checkbox("Back-to-Back", key=f"b2b_h_{index}")
-                    abs_h = st.multiselect("Absents", ["Meneur", "Shooteur", "Pivot"], key=f"abs_h_{index}")
+                    with col_a:
+                        st.subheader(away_row['TEAM_NAME'])
+                        b2b_a = st.checkbox("Back-to-Back", key=f"b2b_a_{index}")
+                        abs_a = st.multiselect("Absents", ["Star", "Shooteur", "Passeur"], key=f"abs_a_{index}")
 
-                with col_m3:
-                    st.subheader(away_row['TEAM_NAME'])
-                    b2b_a = st.checkbox("Back-to-Back", key=f"b2b_a_{index}")
-                    abs_a = st.multiselect("Absents", ["Meneur", "Shooteur", "Pivot"], key=f"abs_a_{index}")
+                    # --- ALGORITHME DE PROJECTION ---
+                    # Facteur Rythme (Pace)
+                    match_pace = (home_row['PACE'] + away_row['PACE']) / 2
+                    pace_coef = match_pace / avg_pace_league
 
-                # --- CALCULS ---
-                pace_match = (home_row['PACE'] + away_row['PACE']) / 2
-                pace_factor = pace_match / avg_pace
-                
-                proj_h = (home_row['FG3M'] + away_row['OPP_FG3M']) / 2
-                proj_a = (away_row['FG3M'] + home_row['OPP_FG3M']) / 2
-                
-                final_h = (proj_h * pace_factor * (0.94 if b2b_h else 1.0)) - (len(abs_h) * 1.5)
-                final_a = (proj_a * pace_factor * (0.94 if b2b_a else 1.0)) - (len(abs_a) * 1.5)
-                total_proj = final_h + final_a
+                    # Calcul de base (Offense A vs Défense B)
+                    proj_home = (home_row['FG3M'] + away_row['OPP_FG3M']) / 2
+                    proj_away = (away_row['FG3M'] + home_row['OPP_FG3M']) / 2
 
-                # --- AFFICHAGE ---
-                st.divider()
-                r1, r2, r3 = st.columns(3)
-                r1.metric("Proj. Domicile", f"{final_h:.1f}")
-                r2.metric("Proj. Extérieur", f"{final_a:.1f}")
-                r3.metric("TOTAL MATCH", f"{total_proj:.1f}")
+                    # Ajustements Fatigue & Absences
+                    adj_home = (proj_home * pace_coef * (0.94 if b2b_h else 1.0)) - (len(abs_h) * 1.6)
+                    adj_away = (proj_away * pace_coef * (0.94 if b2b_a else 1.0)) - (len(abs_a) * 1.6)
+                    total_match = adj_home + adj_away
 
-                line = st.number_input("Ligne Bookmaker", value=float(round(total_proj)), step=0.5, key=f"line_{index}")
-                edge = total_proj - line
-                
-                if abs(edge) >= 2.0:
-                    st.success(f"🔥 SIGNAL FORT : {'OVER' if edge > 0 else 'UNDER'} (Edge: {edge:.2f})")
-                else:
-                    st.info("⚖️ Écart faible.")
+                    # --- AFFICHAGE DES RÉSULTATS ---
+                    st.divider()
+                    st.write(f"📊 **Pace estimé :** {match_pace:.1f} ({'Rapide' if pace_coef > 1 else 'Lent'})")
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric(f"Proj. {home_row['TEAM_NAME']}", f"{adj_home:.1f}")
+                    m2.metric(f"Proj. {away_row['TEAM_NAME']}", f"{adj_away:.1f}")
+                    m3.metric("TOTAL MATCH", f"{total_match:.1f}")
+
+                    # Comparaison Bookmaker
+                    bookie_line = st.number_input("Ligne du Bookmaker", value=float(round(total_match)), step=0.5, key=f"line_{index}")
+                    edge = total_match - bookie_line
+
+                    if abs(edge) >= 2.0:
+                        st.success(f"🔥 **ALERTE VALUE { 'OVER' if edge > 0 else 'UNDER' }** (Edge: {edge:.2f})")
+                    else:
+                        st.info("⚖️ Match équilibré selon l'Oracle.")
+
+                    # Bouton Rapport
+                    if st.button("📝 Copier le Rapport Pro", key=f"btn_{index}"):
+                        st.code(f"PRO-ANALYSIS: {away_row['TEAM_NAME']} @ {home_row['TEAM_NAME']}\n"
+                                f"Projection: {total_match:.1f} | Ligne: {bookie_line}\n"
+                                f"Signal: {'OVER' if edge > 0 else 'UNDER'} | Edge: {abs(edge):.2f}")
