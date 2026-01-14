@@ -1,101 +1,101 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from nba_api.stats.endpoints import leaguedashteamstats, scoreboardv2
 from datetime import datetime
 
-st.set_page_config(page_title="NBA 3P Oracle Pro", layout="wide", page_icon="🏀")
+# --- CONFIGURATION EXPERT ---
+st.set_page_config(page_title="NBA 3P Oracle Premium", layout="wide", page_icon="🏀")
 
 @st.cache_data(ttl=3600)
-def load_expert_data():
+def fetch_nba_stats():
     try:
-        # Chargement des 3 sources de données
-        raw_off = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
-        raw_def = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame', measure_type_detailed_defense='Opponent').get_data_frames()[0]
-        raw_adv = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced').get_data_frames()[0]
+        # 1. Stats Offensives (Paniers marqués)
+        off = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
+        # 2. Stats Défensives (Paniers encaissés par l'adversaire)
+        defen = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame', measure_type_detailed_defense='Opponent').get_data_frames()[0]
+        # 3. Stats Avancées (Pace / Rythme)
+        adv = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced').get_data_frames()[0]
 
-        # Nettoyage automatique des noms de colonnes pour supprimer les préfixes "GP_" ou "TEAM_"
-        for df in [raw_off, raw_def]:
-            df.columns = [c.split('_')[-1] if 'FG' in c else c for c in df.columns]
+        # Nettoyage des colonnes : On uniformise les noms pour éviter les erreurs de l'API
+        off = off.rename(columns=lambda x: x.replace('GP_', '') if 'FG' in x else x)
+        defen = defen.rename(columns=lambda x: x.replace('GP_', '') if 'FG' in x else x)
 
-        # On s'assure d'extraire les bonnes données même si l'ordre change
-        off_df = raw_off[['TEAM_ID', 'TEAM_NAME', 'FG3M']].copy()
-        def_df = raw_def[['TEAM_ID', 'FG3M']].rename(columns={'FG3M': 'OPP_FG3M'})
-        adv_df = raw_adv[['TEAM_ID', 'PACE']]
+        # Sélection et fusion chirurgicale
+        off_df = off[['TEAM_ID', 'TEAM_NAME', 'FG3M']]
+        def_df = defen[['TEAM_ID', 'FG3M']].rename(columns={'FG3M': 'OPP_FG3M'})
+        adv_df = adv[['TEAM_ID', 'PACE']]
 
-        # Fusion finale
         final_df = off_df.merge(def_df, on='TEAM_ID').merge(adv_df, on='TEAM_ID')
         return final_df
     except Exception as e:
-        st.error(f"Erreur d'acquisition de données : {e}")
+        st.error(f"Erreur d'acquisition : {e}")
         return pd.DataFrame()
 
-data = load_expert_data()
+# Chargement
+df_stats = fetch_nba_stats()
 
-# --- HEADER ---
-st.title("🏀 NBA 3-Point Expert Oracle")
-st.markdown(f"**Analyse professionnelle du {datetime.now().strftime('%d/%m/%Y')}**")
+# --- INTERFACE ---
+st.title("🏀 NBA 3-Point Oracle Premium")
+st.sidebar.header("Stratégie de Mise")
+bankroll = st.sidebar.number_input("Capital total (€)", value=1000)
 
-if data.empty:
-    st.error("L'API NBA est momentanément indisponible ou a changé sa structure.")
-    if st.button("Réessayer la connexion"):
-        st.rerun()
+if df_stats.empty:
+    st.error("Données NBA indisponibles. Vérifiez la connexion API.")
 else:
-    avg_pace = data['PACE'].mean()
+    league_avg_pace = df_stats['PACE'].mean()
 
-    # --- MATCHS DU JOUR ---
+    # Récupération des matchs du jour via ScoreboardV2
     try:
-        # ScoreboardV2 est le plus fiable pour les matchs à venir
-        games = scoreboardv2.ScoreboardV2().get_data_frames()[1]
+        games_today = scoreboardv2.ScoreboardV2().get_data_frames()[1]
     except:
-        games = pd.DataFrame()
+        games_today = pd.DataFrame()
 
-    if games.empty:
-        st.info("Aucun match trouvé pour le moment. Vérifiez l'heure des matchs (Fuseau US).")
+    if games_today.empty:
+        st.info("Aucun match trouvé pour la date sélectionnée (Fuseau Horaire US).")
     else:
-        for idx, row in games.iterrows():
-            h_id, a_id = row.get('HOME_TEAM_ID'), row.get('VISITOR_TEAM_ID')
+        for idx, match in games_today.iterrows():
+            h_id, a_id = match.get('HOME_TEAM_ID'), match.get('VISITOR_TEAM_ID')
             
-            # On vérifie si les IDs existent dans notre base de stats
-            if h_id in data['TEAM_ID'].values and a_id in data['TEAM_ID'].values:
-                h_stats = data[data['TEAM_ID'] == h_id].iloc[0]
-                a_stats = data[data['TEAM_ID'] == a_id].iloc[0]
+            if h_id in df_stats['TEAM_ID'].values and a_id in df_stats['TEAM_ID'].values:
+                h_team = df_stats[df_stats['TEAM_ID'] == h_id].iloc[0]
+                a_team = df_stats[df_stats['TEAM_ID'] == a_id].iloc[0]
 
-                with st.expander(f"🔍 {a_stats['TEAM_NAME']} @ {h_stats['TEAM_NAME']}"):
-                    # Interface de réglage
+                with st.expander(f"📊 ANALYSE : {a_team['TEAM_NAME']} vs {h_team['TEAM_NAME']}"):
+                    # Configuration du contexte de match
                     c1, c2, c3 = st.columns([2, 1, 2])
                     with c1:
-                        b2b_h = st.checkbox("Back-to-Back", key=f"b2b_h_{idx}")
-                        abs_h = st.multiselect("Absents majeurs", ["Star", "Shooteur", "Meneur"], key=f"abs_h_{idx}")
+                        st.write(f"**{h_team['TEAM_NAME']}**")
+                        h_b2b = st.checkbox("Back-to-Back", key=f"h_b2b_{idx}")
+                        h_abs = st.slider("Impact Absences (Paniers)", 0.0, 5.0, 0.0, 0.5, key=f"h_abs_{idx}")
                     with c3:
-                        b2b_a = st.checkbox("Back-to-Back", key=f"b2b_a_{idx}")
-                        abs_a = st.multiselect("Absents majeurs", ["Star", "Shooteur", "Meneur"], key=f"abs_a_{idx}")
+                        st.write(f"**{a_team['TEAM_NAME']}**")
+                        a_b2b = st.checkbox("Back-to-Back", key=f"a_b2b_{idx}")
+                        a_abs = st.slider("Impact Absences (Paniers)", 0.0, 5.0, 0.0, 0.5, key=f"a_abs_{idx}")
 
-                    # --- CALCULS ---
-                    pace_match = (h_stats['PACE'] + a_stats['PACE']) / 2
-                    pace_adj = pace_match / avg_pace
+                    # --- ALGORITHME DE PROJECTION ---
+                    match_pace = (h_team['PACE'] + a_team['PACE']) / 2
+                    pace_factor = match_pace / league_avg_pace
                     
-                    # Logique de projection croisée
-                    base_h = (h_stats['FG3M'] + a_stats['OPP_FG3M']) / 2
-                    base_a = (a_stats['FG3M'] + h_stats['OPP_FG3M']) / 2
+                    proj_h = ((h_team['FG3M'] + a_team['OPP_FG3M']) / 2) * pace_factor * (0.94 if h_b2b else 1.0) - h_abs
+                    proj_a = ((a_team['FG3M'] + h_team['OPP_FG3M']) / 2) * pace_factor * (0.94 if a_b2b else 1.0) - a_abs
+                    total_proj = proj_h + proj_a
 
-                    # Application des facteurs de fatigue et absences
-                    final_h = (base_h * pace_adj * (0.94 if b2b_h else 1.0)) - (len(abs_h) * 1.6)
-                    final_a = (base_a * pace_adj * (0.94 if b2b_a else 1.0)) - (len(abs_a) * 1.6)
-                    total = final_h + final_a
-
-                    # --- AFFICHAGE ---
+                    # --- RÉSULTATS ---
                     st.divider()
-                    st.write(f"📈 Rythme de jeu : **{pace_match:.1f}**")
-                    v1, v2, v3 = st.columns(3)
-                    v1.metric(h_stats['TEAM_NAME'], f"{final_h:.1f}")
-                    v2.metric(a_stats['TEAM_NAME'], f"{final_a:.1f}")
-                    v3.metric("TOTAL PROJETÉ", f"{total:.1f}")
+                    res1, res2, res3 = st.columns(3)
+                    res1.metric("Proj. Domicile", f"{proj_h:.2f}")
+                    res2.metric("Proj. Extérieur", f"{proj_a:.2f}")
+                    res3.metric("TOTAL MATCH", f"{total_proj:.2f}")
 
-                    # Comparateur
-                    line = st.number_input("Cote Bookmaker", value=float(round(total)), step=0.5, key=f"line_{idx}")
-                    edge = total - line
+                    # --- CONSEIL DE MISE PRO ---
+                    line = st.number_input("Ligne du Bookmaker", value=float(round(total_proj, 1)), step=0.5, key=f"l_{idx}")
+                    edge = total_proj - line
                     
-                    if abs(edge) >= 2.0:
-                        st.success(f"🔥 SIGNAL FORT : **{'OVER' if edge > 0 else 'UNDER'}** (Edge: {edge:.2f})")
+                    if abs(edge) >= 1.5:
+                        confiance = min(abs(edge) * 20, 100.0)
+                        mise_recommandee = (bankroll * (abs(edge) / 50)) # Gestion prudente
+                        st.success(f"🎯 **SIGNAL : {'OVER' if edge > 0 else 'UNDER'}**")
+                        st.write(f"Indice de confiance : **{confiance:.1f}%** | Mise suggérée : **{mise_recommandee:.2f}€**")
                     else:
-                        st.info("⚖️ Match neutre statistique.")
+                        st.info("⚖️ Écart trop faible pour une mise sécurisée.")
