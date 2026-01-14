@@ -4,18 +4,18 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NBA Oracle Pro + Tracker", layout="wide", page_icon="🏀")
+st.set_page_config(page_title="NBA Oracle Pro v3", layout="wide", page_icon="🏀")
 
-# Initialisation de l'historique dans la session
+# Initialisation de l'historique
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# Récupération sécurisée
+# Récupération sécurisée des clés
 try:
     RAPID_KEY = st.secrets["X_RAPIDAPI_KEY"]
     RAPID_HOST = st.secrets["X_RAPIDAPI_HOST"]
 except:
-    st.error("Erreur : Configurez vos Secrets (X_RAPIDAPI_KEY) sur Streamlit.")
+    st.error("⚠️ Clés API absentes des Secrets Streamlit (X_RAPIDAPI_KEY / X_RAPIDAPI_HOST)")
     st.stop()
 
 NBA_TEAMS = sorted([
@@ -29,83 +29,111 @@ NBA_TEAMS = sorted([
     "Utah Jazz", "Washington Wizards"
 ])
 
-@st.cache_data(ttl=86400)
-def get_team_stats(team_display_name):
-    api_slug = team_display_name.replace(" ", "-").lower()
-    url = f"https://{RAPID_HOST}/teams/{api_slug}/stats"
+# --- MOTEUR D'ACQUISITION ---
+@st.cache_data(ttl=3600)
+def get_nba_data(team_name):
+    """Récupère les données réelles et gère les erreurs de structure JSON"""
+    # L'API Basketball-Head utilise souvent le nom de l'équipe en minuscule (ex: lakers)
+    slug = team_name.split(" ")[-1].lower() 
+    url = f"https://{RAPID_HOST}/teams/{slug}/stats"
     headers = {"x-rapidapi-key": RAPID_KEY, "x-rapidapi-host": RAPID_HOST}
+    
     try:
         response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return {"error": f"Erreur API: {response.status_code}"}
+        
         data = response.json()
+        
+        # Extraction dynamique selon plusieurs structures possibles de l'API
+        stats = data.get('body', data) # Cherche dans 'body' ou à la racine
+        if isinstance(stats, list) and len(stats) > 0: stats = stats[0]
+
+        # On cherche les valeurs sans fallback automatique pour détecter les pannes
+        fg3 = stats.get('fg3_per_game') or stats.get('three_pointers_made')
+        opp_fg3 = stats.get('opp_fg3_per_game') or stats.get('opp_three_pointers_made')
+        pace = stats.get('pace')
+
+        if fg3 is None:
+            return {"error": f"Données non trouvées pour {team_name}", "debug": data}
+            
         return {
-            "fg3m": float(data.get('fg3_per_game', 12.0)),
-            "opp_fg3m": float(data.get('opp_fg3_per_game', 12.0)),
-            "pace": float(data.get('pace', 99.0))
+            "fg3m": float(fg3),
+            "opp_fg3m": float(opp_fg3) if opp_fg3 else 11.5,
+            "pace": float(pace) if pace else 99.0
         }
-    except:
-        return None
+    except Exception as e:
+        return {"error": str(e)}
 
 # --- INTERFACE ---
-st.title("🏀 NBA Oracle : Analyse & Suivi ROI")
+st.title("🏀 NBA Oracle Premium : Analyse Corrigée")
 
-tab1, tab2 = st.tabs(["🎯 Analyse du Match", "📈 Historique & Performance"])
+# Barre latérale pour le Debug et Paramètres
+with st.sidebar:
+    st.header("🛠️ Options")
+    debug_mode = st.checkbox("Afficher les données brutes (Debug)")
+    st.divider()
+    b2b_h = st.toggle("Home en B2B")
+    b2b_a = st.toggle("Away en B2B")
+    abs_imp = st.slider("Impact Absences (Paniers)", 0.0, 6.0, 0.0, 0.5)
+    st.divider()
+    bet_val = st.number_input("Mise (€)", 10.0)
+    odd_val = st.number_input("Cote", 1.85)
+
+tab1, tab2 = st.tabs(["🎯 Analyse", "📈 Historique ROI"])
 
 with tab1:
     c1, cvs, c2 = st.columns([2, 0.5, 2])
-    with c1: away_t = st.selectbox("Équipe Extérieure", NBA_TEAMS, index=9)
-    with cvs: st.markdown("<h3 style='text-align:center;'>@</h3>", unsafe_allow_html=True)
-    with c2: home_t = st.selectbox("Équipe Domicile", NBA_TEAMS, index=1)
+    with c1: away_t = st.selectbox("✈️ Équipe Extérieure", NBA_TEAMS, index=13)
+    with cvs: st.markdown("<h3 style='text-align:center;'>VS</h3>", unsafe_allow_html=True)
+    with c2: home_t = st.selectbox("🏠 Équipe Domicile", NBA_TEAMS, index=23)
 
-    with st.sidebar:
-        st.header("⚙️ Paramètres")
-        b2b_h = st.toggle("Home en B2B")
-        b2b_a = st.toggle("Away en B2B")
-        abs_imp = st.slider("Impact Absences", 0.0, 5.0, 0.0)
-        st.divider()
-        bet_amount = st.number_input("Mise (€)", value=10.0)
-        odds = st.number_input("Cote (ex: 1.85)", value=1.85)
+    if st.button("🚀 LANCER L'ANALYSE"):
+        h_res = get_nba_data(home_t)
+        a_res = get_nba_data(away_t)
 
-    if st.button("Calculer & Préparer le Pari"):
-        h_s = get_team_stats(home_t)
-        a_s = get_team_stats(away_t)
-        
-        if h_s and a_s:
-            # Algorithme
-            m_pace = (h_s['pace'] + a_s['pace']) / 2
-            p_fact = m_pace / 99.2
-            res_h = ((h_s['fg3m'] + a_s['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_h else 1.0)
-            res_a = ((a_s['fg3m'] + h_s['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_a else 1.0)
-            total = (res_h + res_a) - abs_imp
+        if debug_mode:
+            st.write("Debug Home:", h_res)
+            st.write("Debug Away:", a_res)
 
-            st.metric("TOTAL PROJETÉ", f"{total:.2f} Paniers à 3pts")
+        if "error" in h_res or "error" in a_res:
+            st.error(f"Impossible de calculer : {h_res.get('error') or a_res.get('error')}")
+            st.info("💡 Conseil : Si l'erreur est 'Données non trouvées', essayez d'effacer le cache dans le menu en haut à droite.")
+        else:
+            # --- ALGORITHME ---
+            m_pace = (h_res['pace'] + a_res['pace']) / 2
+            p_fact = m_pace / 99.5
             
-            # Enregistrement temporaire pour le tracker
-            st.session_state.current_bet = {
+            proj_h = ((h_res['fg3m'] + a_res['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_h else 1.0)
+            proj_a = ((a_res['fg3m'] + h_res['opp_fg3m']) / 2) * p_fact * (0.94 if b2b_a else 1.0)
+            total = (proj_h + proj_a) - abs_imp
+
+            st.divider()
+            r1, r2, r3 = st.columns(3)
+            r1.metric(home_t, f"{proj_h:.2f}")
+            r2.metric(away_t, f"{proj_a:.2f}")
+            r3.metric("TOTAL MATCH", f"{total:.2f}")
+
+            st.session_state.last_calc = {
                 "Date": datetime.now().strftime("%d/%m/%Y"),
                 "Match": f"{away_t} @ {home_t}",
                 "Projection": round(total, 2),
-                "Mise": bet_amount,
-                "Cote": odds
+                "Mise": bet_val, "Cote": odd_val
             }
-            st.success("Analyse prête. Si vous pariez, cliquez sur 'Enregistrer ce pari' ci-dessous.")
 
-    if 'current_bet' in st.session_state:
-        if st.button("💾 Enregistrer ce pari dans l'historique"):
-            st.session_state.history.append(st.session_state.current_bet)
-            st.toast("Pari ajouté à l'historique !")
+    if 'last_calc' in st.session_state:
+        if st.button("💾 Enregistrer ce pari"):
+            st.session_state.history.append(st.session_state.last_calc)
+            st.success("Pari archivé !")
 
 with tab2:
-    st.header("Suivi de vos investissements")
     if st.session_state.history:
         df = pd.DataFrame(st.session_state.history)
-        st.table(df)
+        st.dataframe(df, use_container_width=True)
+        total_bets = sum(i['Mise'] for i in st.session_state.history)
+        st.metric("Total Engagé", f"{total_bets:.2f} €")
         
-        # Calculs rapides
-        total_miste = sum(d['Mise'] for d in st.session_state.history)
-        st.write(f"**Total Engagé :** {total_miste:.2f}€")
-        
-        # Export CSV
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Télécharger l'historique (CSV)", data=csv, file_name="nba_oracle_bets.csv", mime="text/csv")
+        st.download_button("📥 Télécharger Excel/CSV", data=csv, file_name="nba_tracker.csv")
     else:
-        st.info("Aucun pari enregistré pour le moment.")
+        st.info("Aucun historique pour cette session.")
